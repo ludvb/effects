@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "effects"
+dynamic = ["version"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[tool.setuptools.dynamic]
+version = {attr = "effects.__version__.__version__"}
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "--maxfail=1 --disable-warnings -q"
+testpaths = ["tests"]
