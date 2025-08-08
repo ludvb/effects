@@ -13,62 +13,42 @@ pip install git+https://github.com/ludvb/effects.git
 
 ## Usage
 
-The following example demonstrates a simple logging system.
-It shows how to define effects, create handlers that can modify and forward effects, and compose them.
-
 ```python
 import effects as fx
-import sys
 from datetime import datetime
 
-# 1. Define a logging effect that expects a formatted string back.
+# Define an effect
 class Log(fx.Effect[str]):
     def __init__(self, message: str):
         self.message = message
 
-# 2. The final handler formats the message and returns it.
+# Basic handler
 def log_writer(effect: Log) -> str:
-    formatted_message = f"LOG: {effect.message}"
-    print(formatted_message, file=sys.stdout)
-    return formatted_message
+    formatted = f"LOG: {effect.message}"
+    print(formatted)
+    return formatted
 
-# 3. A handler that adds a timestamp and forwards the effect.
+# Handler that modifies and forwards
 def add_timestamp(effect: Log) -> str:
-    new_message = f"[{datetime.now().isoformat()}] {effect.message}"
-    # Forward the modified effect to the next handler and return its result.
-    return fx.send(Log(new_message), interpret_final=False)
+    timestamped = f"[{datetime.now().isoformat()}] {effect.message}"
+    return fx.send(Log(timestamped), interpret_final=False)
 
-# --- Core Application Logic ---
-def main_app_logic():
-    print("Application is running...")
-    # The application sends the effect and receives the final, formatted string.
-    final_log = fx.send(Log("Something important happened!"))
-    print(f"Final log message was: '{final_log}'")
-    print("Application finished.")
+# Application code
+def app():
+    result = fx.send(Log("Something happened"))
+    print(f"Got: {result}")
 
-# --- Composition Root ---
-# Here, we compose the application with different logging behaviors.
-
-print("--- Running with a simple logger ---")
+# Simple handler
 with fx.handler(log_writer, Log):
-    main_app_logic()
-# Expected Output:
-# Application is running...
-# LOG: Something important happened!
-# Final log message was: 'LOG: Something important happened!'
-# Application finished.
+    app()
+# Output: LOG: Something happened
+#         Got: LOG: Something happened
 
-print("\n--- Running with a timestamp logger ---")
-# Handlers are stacked. `add_timestamp` is called first, which then
-# forwards the modified effect to `log_writer`.
-with fx.handler(log_writer, Log):
-    with fx.handler(add_timestamp, Log):
-        main_app_logic()
-# Expected Output:
-# Application is running...
-# LOG: [YYYY-MM-DDTHH:MM:SS.ffffff] Something important happened!
-# Final log message was: 'LOG: [YYYY-MM-DDTHH:MM:SS.ffffff] Something important happened!'
-# Application finished.
+# Stacked handlers - timestamp runs first, then forwards to log_writer
+with fx.handler(log_writer, Log), fx.handler(add_timestamp, Log):
+    app()
+# Output: LOG: [2024-...] Something happened
+#         Got: LOG: [2024-...] Something happened
 ```
 
 ## See also
