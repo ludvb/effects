@@ -75,6 +75,23 @@ with fx.handler(log_writer, Log):
 
 - [effects-logging](https://github.com/ludvb/effects-logging): A logging framework built on top of the effects library.
 
+## Development
+
+```bash
+# Install with dev dependencies
+pip install -e ".[dev]"
+
+# Run tests
+pytest tests/
+
+# Type checking
+pyright
+
+# Linting and formatting
+ruff check src/ tests/
+ruff format src/ tests/
+```
+
 ## Contributing
 
 Contributions are welcome! Please feel free to open an issue to report bugs or suggest features, or submit a pull request with improvements.

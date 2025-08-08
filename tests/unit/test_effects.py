@@ -1,4 +1,4 @@
-"""Tests for the effects library core functionality."""
+"""Unit tests for the effects library core functionality."""
 
 from effects.effects import Effect, handler, send
 
@@ -76,36 +76,3 @@ def test_interpret_final_forwarding():
 
     # Expected: (5 * 2) + 10 = 20
     assert result == 20
-
-
-def test_thread_safety():
-    """Test that effect handlers are context-local and do not interfere across threads."""
-    from threading import Thread
-    import queue
-
-    results = queue.Queue()
-
-    def worker(thread_id):
-        # Each thread uses its own handler
-        with handler(lambda e, tid=thread_id: f"pong-{tid}", Ping):
-            # call send multiple times
-            for _ in range(5):
-                results.put(send(Ping()))
-
-    threads = [Thread(target=worker, args=(i,)) for i in range(3)]
-    # Start threads
-    for t in threads:
-        t.start()
-    # Wait for completion
-    for t in threads:
-        t.join()
-
-    # Collect results
-    collected = []
-    while not results.empty():
-        collected.append(results.get())
-
-    # Check that each thread's results are correct and isolated
-    for i in range(3):
-        expected = f"pong-{i}"
-        assert collected.count(expected) == 5

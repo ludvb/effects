@@ -1,18 +1,26 @@
-from typing import Any, overload, Literal
 from types import TracebackType
+from typing import Any, Literal, overload
 
 
 class stack[T]:
+    """Combine multiple context managers into a single, reusable context
+    manager. Useful for stacking effect handlers.
+
+    Args:
+        *context_managers: Context managers to combine.
+        return_value: Optional value to return from __enter__ instead of self.
+    """
+
     def __init__(self, *context_managers: Any, return_value: T | None = None) -> None:
         self._context_managers = context_managers
         self._return_value = return_value
 
     @overload
     def __enter__(self: "stack[None]") -> "stack[None]": ...
-    
+
     @overload
     def __enter__(self: "stack[T]") -> T: ...
-    
+
     def __enter__(self: "stack[None] | stack[T]"):
         for context_manager in self._context_managers:
             context_manager.__enter__()
@@ -24,7 +32,7 @@ class stack[T]:
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
-        exc_tb: TracebackType | None
+        exc_tb: TracebackType | None,
     ) -> Literal[False]:
         # Call __exit__ on all context managers in reverse order
         # If any raise an exception, that exception will propagate
@@ -33,8 +41,8 @@ class stack[T]:
         return False
 
     def __repr__(self) -> str:
+        """Return a string representation of the stack."""
         context_managers_str = ", ".join(str(cm) for cm in self._context_managers)
         return (
-            f"stack(context_managers=[{context_managers_str}], "
-            f"return_value={self._return_value})"
+            f"stack(context_managers=[{context_managers_str}], return_value={self._return_value})"
         )

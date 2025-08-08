@@ -5,11 +5,17 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "effects"
 dynamic = ["version"]
+requires-python = ">=3.12"
 
 [project.optional-dependencies]
 dev = [
-    "pytest",
+    "pytest>=7.0",
+    "pytest-cov",
+    "pytest-xdist",  # Parallel test execution
     "ruff",
+    "pyright",
+    "pre-commit",
+    "ipdb",  # Better debugging
 ]
 
 [tool.setuptools.dynamic]
@@ -19,3 +25,93 @@ version = {attr = "effects.__version__.__version__"}
 minversion = "6.0"
 addopts = "--maxfail=1 --disable-warnings -q"
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+indent-width = 4
+exclude = [
+    ".git",
+    "__pycache__",
+    "build",
+    "dist",
+    "*.egg-info",
+    ".venv",
+    "venv",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort (import sorting)
+    "B",    # flake8-bugbear (common bugs)
+    "C4",   # flake8-comprehensions
+    "UP",   # pyupgrade (modern Python patterns)
+    "ARG",  # flake8-unused-arguments
+    "SIM",  # flake8-simplify
+    "TID",  # flake8-tidy-imports
+    "RUF",  # Ruff-specific rules
+]
+ignore = [
+    "E501",   # Line too long (handled by formatter)
+    "ARG001", # Unused function argument (common in effect handlers)
+    "ARG002", # Unused method argument
+    "B008",   # Do not perform function calls in argument defaults
+    "B011",   # Do not assert False (used in tests)
+    "B028",   # No explicit stacklevel in warnings (not critical)
+    "SIM108", # Use ternary operator instead of if-else block
+    "SIM117", # Nested with statements (sometimes clearer)
+    "UP035",  # Deprecated typing imports (ContextManager still widely used)
+    "UP047",  # Use type parameters (not always needed)
+    "RUF003", # Ambiguous unicode characters (× in comments is fine)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401", "F403"]  # Allow unused imports and star imports
+"test_*.py" = ["ARG"]  # Test functions often have unused fixtures
+
+[tool.ruff.lint.isort]
+known-first-party = ["effects"]
+combine-as-imports = true
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.pyright]
+include = ["src", "tests"]
+exclude = ["**/__pycache__", "build", "dist", "*.egg-info"]
+pythonVersion = "3.12"
+pythonPlatform = "All"
+typeCheckingMode = "standard"  # Not strict - allows gradual typing
+
+# Leverage inference while catching real issues
+useLibraryCodeForTypes = true
+reportMissingTypeStubs = false
+reportMissingImports = true
+
+# Don't require type annotations everywhere - let Pyright infer
+reportMissingParameterType = "none"
+reportUnknownParameterType = "none"
+reportMissingTypeArgument = "none"
+reportUnknownMemberType = "none"
+reportUnknownArgumentType = "none"
+reportUnknownLambdaType = "none"
+reportUnknownVariableType = "none"
+
+# Catch actual problems
+reportMatchNotExhaustive = "error"  # Catch missed pattern matching cases
+reportUnusedVariable = "warning"
+reportUnusedImport = "warning"
+reportUnusedClass = "warning"
+reportUnusedFunction = "warning"
+reportPrivateUsage = "warning"
+reportDuplicateImport = "warning"
+
+# Effects library specific - these patterns are common
+reportIncompatibleMethodOverride = "none"  # Effect handlers override differently
+reportIncompatibleVariableOverride = "none"  # State management patterns

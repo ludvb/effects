@@ -1,39 +1,28 @@
-"""
-Core implementation of the algebraic effects system.
-
-Provides mechanisms to define, send, and handle effects using context managers
-and context variables for isolation.
-"""
-
 import contextvars
 import inspect
 import warnings
+from collections.abc import Callable, Generator
 from functools import wraps
+from types import TracebackType
 from typing import (
-    Callable,
-    ContextManager,
     Any,
-    TypeVar,
-    Generic,
-    Type,
-    List,
-    Tuple,
-    Optional,
+    ContextManager,
     ParamSpec,
+    TypeVar,
     overload,
 )
 
 from .util import stack
 
+R = TypeVar("R")  # Return type for effects
+E = TypeVar("E", bound="Effect[Any]")  # Effect type (must be subclass of Effect)
+D = TypeVar("D")  # Default value type for safe_send
+T = TypeVar("T")  # Generic type variable for function returns
+P = ParamSpec("P")  # Function parameters specification
+G = TypeVar("G")  # Generator yield type
 
-R = TypeVar("R")
-E = TypeVar("E", bound="Effect[Any]")
-D = TypeVar("D")
-T = TypeVar("T")
-P = ParamSpec("P")
 
-
-class Effect(Generic[R]):
+class Effect[R]:
     """Base class for all effects."""
 
 
@@ -48,18 +37,19 @@ class NoHandlerError(Exception):
         self.effect = effect
 
 
-_STACK_VAR: contextvars.ContextVar[
-    Optional[List[Tuple[Callable[[Any], Any], Type[Any]]]]
-] = contextvars.ContextVar("_STACK_VAR", default=None)
-_PTR_VAR: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar(
+_STACK_VAR: contextvars.ContextVar[list[tuple[Callable[[Any], Any], type[Any]]] | None] = (
+    contextvars.ContextVar("_STACK_VAR", default=None)
+)
+_PTR_VAR: contextvars.ContextVar[int | None] = contextvars.ContextVar(
     "_STACK_PTR_VAR", default=None
 )
 
 
-def get_stack() -> List[Tuple[Callable[[Any], Any], Type[Any]]]:
+def get_stack() -> list[tuple[Callable[[Any], Any], type[Any]]]:
+    """Get the current effect handler stack, creating one if it doesn't exist."""
     current_list = _STACK_VAR.get()
     if current_list is None:
-        list_to_set: List[Tuple[Callable[[Any], Any], Type[Any]]] = []
+        list_to_set: list[tuple[Callable[[Any], Any], type[Any]]] = []
     else:
         # If a list exists (possibly from a copied context), copy it to ensure isolation.
         list_to_set = list(current_list)
@@ -67,15 +57,17 @@ def get_stack() -> List[Tuple[Callable[[Any], Any], Type[Any]]]:
     return list_to_set
 
 
-class _EffectHandlerContext(Generic[E, R]):
+class _EffectHandlerContext[E, R]:
+    """Context manager for effect handlers."""
+
     def __init__(
         self,
         handler_func: Callable[[E], R],
-        effect_type: Type[E],
-        stack_accessor: Callable[[], List[Tuple[Callable[[Any], Any], Type[Any]]]],
+        effect_type: type[E],
+        stack_accessor: Callable[[], list[tuple[Callable[[Any], Any], type[Any]]]],
         *,
-        on_enter: Optional[Callable[[], None]] = None,
-        on_exit: Optional[Callable[[Any, Any, Any], None]] = None,
+        on_enter: Callable[[], None] | None = None,
+        on_exit: Callable[[Any, Any, Any], None] | None = None,
     ):
         self._handler_func = handler_func
         self._effect_type = effect_type
@@ -84,13 +76,20 @@ class _EffectHandlerContext(Generic[E, R]):
         self._on_exit = on_exit
 
     def __enter__(self):
+        """Register the handler on the stack when entering the context."""
         stack = self._get_stack()
         stack.append((self._handler_func, self._effect_type))
         if self._on_enter:
             self._on_enter()
         return self._handler_func
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        """Remove the handler from the stack when exiting the context."""
         stack = self._get_stack()
         expected = (self._handler_func, self._effect_type)
         if stack:
@@ -100,9 +99,7 @@ class _EffectHandlerContext(Generic[E, R]):
                     if self._on_exit:
                         self._on_exit(exc_type, exc_val, exc_tb)
                     return
-            warnings.warn(
-                f"Handler {expected} not found on stack during exit.", RuntimeWarning
-            )
+            warnings.warn(f"Handler {expected} not found on stack during exit.", RuntimeWarning)
         else:
             warnings.warn(
                 f"Stack empty on exit, but handler {expected} was expected.",
@@ -112,13 +109,12 @@ class _EffectHandlerContext(Generic[E, R]):
 
 def handler(
     handler_func: Callable[[E], R],
-    effect_type: Type[E],
+    effect_type: type[E],
     *,
-    on_enter: Optional[Callable[[], None]] = None,
-    on_exit: Optional[Callable[[Any, Any, Any], None]] = None,
+    on_enter: Callable[[], None] | None = None,
+    on_exit: Callable[[Any, Any, Any], None] | None = None,
 ) -> _EffectHandlerContext[E, R]:
-    """
-    Prepares an effect handler for a specific effect type, to be used in a `with` statement.
+    """Prepare an effect handler for a specific effect type, to be used in a `with` statement.
 
     Args:
         handler_func: The function to call when an effect of `effect_type` is sent.
@@ -136,8 +132,7 @@ def handler(
 
 
 def send(effect: Effect[R], interpret_final: bool = True) -> R:
-    """
-    Sends an effect up the handler stack to be processed.
+    """Send an effect up the handler stack to be processed.
 
     Args:
         effect: The effect instance to send.
@@ -177,15 +172,15 @@ def safe_send(
     interpret_final: bool = True,
     *,
     default_value: D,
-) -> R | D:
-    ...
+) -> R | D: ...
+
 
 @overload
 def safe_send(
     effect: Effect[R],
     interpret_final: bool = True,
-) -> R | None:
-    ...
+) -> R | None: ...
+
 
 def safe_send(
     effect: Effect[R],
@@ -193,8 +188,7 @@ def safe_send(
     *,
     default_value: D | None = None,
 ) -> R | D | None:
-    """
-    Sends an effect up the handler stack, returning a default value if no handler is found.
+    """Send an effect up the handler stack, returning a default value if no handler is found.
 
     Args:
         effect: The effect instance to send.
@@ -222,9 +216,8 @@ def safe_send(
         return default_value
 
 
-def barrier(effect_type: Type[E]):
-    """
-    Creates a handler that raises NoHandlerError for the specified effect type.
+def barrier(effect_type: type[E]):
+    """Create a handler that raises NoHandlerError for the specified effect type.
 
     This is useful for ensuring that certain effects are not handled in specific contexts.
 
@@ -235,20 +228,34 @@ def barrier(effect_type: Type[E]):
         A handler function that raises NoHandlerError when called with the specified effect type.
     """
 
-    def _raise(effect):
+    def _raise(effect: E) -> None:
         raise NoHandlerError(effect)
 
     return handler(_raise, effect_type)
 
 
+@overload
+def bind(
+    computation: Callable[P, Generator[G, Any, R]],
+    *effect_handlers: ContextManager[Any],
+    bind_current_context: bool = False,
+) -> Callable[P, Generator[G, Any, R]]: ...
+
+
+@overload
 def bind(
     computation: Callable[P, T],
-    *effect_handlers: ContextManager,
+    *effect_handlers: ContextManager[Any],
     bind_current_context: bool = False,
-) -> Callable[P, T]:
-    """
-    Binds a computation to a list of effect handlers, isolating its effects to
-    the provided handlers.
+) -> Callable[P, T]: ...
+
+
+def bind(
+    computation: Callable[P, Any],
+    *effect_handlers: ContextManager[Any],
+    bind_current_context: bool = False,
+) -> Callable[P, Any]:
+    """Bind a computation to effect handlers, isolating its effects to the provided handlers.
 
     Args:
         computation: The computation to execute.
@@ -271,7 +278,7 @@ def bind(
         _PTR_VAR.reset(old_stack_ptr)
 
     @wraps(computation)
-    def _run_generator(*args, **kwargs):
+    def _run_generator(*args: P.args, **kwargs: P.kwargs) -> Generator[Any, Any, Any]:
         g = ctx.run(computation, *args, **kwargs)
         while True:
             try:
@@ -280,7 +287,7 @@ def bind(
                 return e.value
 
     @wraps(computation)
-    def _run_function(*args, **kwargs):
+    def _run_function(*args: P.args, **kwargs: P.kwargs) -> Any:
         return ctx.run(computation, *args, **kwargs)
 
     if inspect.isgeneratorfunction(computation):
