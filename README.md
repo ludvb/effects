@@ -18,37 +18,48 @@ import effects as fx
 from datetime import datetime
 
 # Define an effect
-class Log(fx.Effect[str]):
+class Log(fx.Effect[int]):
     def __init__(self, message: str):
         self.message = message
 
-# Basic handler
-def log_writer(effect: Log) -> str:
+# Define effect handlers
+@fx.handler
+def log_writer(effect: Log):
     formatted = f"LOG: {effect.message}"
     print(formatted)
-    return formatted
+    return len(formatted)
 
-# Handler that modifies and forwards
-def add_timestamp(effect: Log) -> str:
+@fx.handler
+def add_timestamp(effect: Log):
     timestamped = f"[{datetime.now().isoformat()}] {effect.message}"
     return fx.send(Log(timestamped), interpret_final=False)
+    
+# Define an effectful computation
+def log_event(message: str):
+    return fx.send(Log(message))
 
 # Application code
 def app():
-    result = fx.send(Log("Something happened"))
-    print(f"Got: {result}")
+    result = log_event("Something happened")
+    print(f"Characters written: {result}")
 
-# Simple handler
-with fx.handler(log_writer, Log):
+# Use the decorated handler
+with log_writer:
     app()
 # Output: LOG: Something happened
-#         Got: LOG: Something happened
+#         Characters written: 23
 
-# Stacked handlers - timestamp runs first, then forwards to log_writer
-with fx.handler(log_writer, Log), fx.handler(add_timestamp, Log):
+# Stack multiple handlers - timestamp runs first, then forwards to log_writer
+with log_writer, add_timestamp:
     app()
 # Output: LOG: [2024-...] Something happened
-#         Got: LOG: [2024-...] Something happened
+#         Characters written: 52
+
+# Effect types are inferred from the signature of the handler.
+# It's also possible to specify the effect type explicitly when using an untyped handler:
+with fx.handler(lambda e: 0, Log):
+    app()
+# Output: Characters written: 0
 ```
 
 ## See also

@@ -107,9 +107,28 @@ class _EffectHandlerContext[E, R]:
             )
 
 
+@overload
 def handler(
     handler_func: Callable[[E], R],
     effect_type: type[E],
+    *,
+    on_enter: Callable[[], None] | None = None,
+    on_exit: Callable[[Any, Any, Any], None] | None = None,
+) -> _EffectHandlerContext[E, R]: ...
+
+
+@overload
+def handler(
+    handler_func: Callable[[E], R],
+    *,
+    on_enter: Callable[[], None] | None = None,
+    on_exit: Callable[[Any, Any, Any], None] | None = None,
+) -> _EffectHandlerContext[E, R]: ...
+
+
+def handler(
+    handler_func: Callable[[E], R],
+    effect_type: type[E] | None = None,
     *,
     on_enter: Callable[[], None] | None = None,
     on_exit: Callable[[Any, Any, Any], None] | None = None,
@@ -117,15 +136,56 @@ def handler(
     """Prepare an effect handler for a specific effect type, to be used in a `with` statement.
 
     Args:
-        handler_func: The function to call when an effect of `effect_type` is sent.
-        effect_type: The class of the effect to handle.
+        handler_func: The function to call when an effect is sent. The effect type can be
+                      inferred from the type annotation of the first parameter.
+        effect_type: The class of the effect to handle. If not provided, it will be inferred
+                     from the type annotation of handler_func's first parameter.
         on_enter: Optional function to call when entering the context.
         on_exit: Optional function to call when exiting the context.
 
     Returns:
         A context manager object (_EffectHandlerContext) that registers the handler.
         The `__enter__` method of this object returns the handler function itself.
+
+    Raises:
+        TypeError: If effect_type is not provided and cannot be inferred from handler_func.
     """
+    if effect_type is None:
+        # Try to infer the effect type from the handler function's type annotations
+        sig = inspect.signature(handler_func)
+        params = list(sig.parameters.values())
+
+        if not params:
+            raise TypeError(
+                "Cannot infer effect type: handler_func has no parameters. "
+                "Please provide effect_type explicitly."
+            )
+
+        first_param = params[0]
+        param_annotation = first_param.annotation
+
+        if param_annotation is inspect.Parameter.empty:
+            raise TypeError(
+                f"Cannot infer effect type: parameter '{first_param.name}' has no type annotation. "
+                "Please provide effect_type explicitly or add a type annotation."
+            )
+
+        # Handle both direct type and generic type annotations
+        # For example: Query or Effect[str] or subclasses
+        if hasattr(param_annotation, "__origin__"):
+            # It's a generic type, get the origin
+            effect_type = param_annotation.__origin__
+        else:
+            # It's a direct type
+            effect_type = param_annotation
+
+        # Verify it's actually an Effect subclass
+        if not (isinstance(effect_type, type) and issubclass(effect_type, Effect)):
+            raise TypeError(
+                f"Inferred type {effect_type} is not a subclass of Effect. "
+                "Please provide effect_type explicitly."
+            )
+
     return _EffectHandlerContext(
         handler_func, effect_type, get_stack, on_enter=on_enter, on_exit=on_exit
     )
