@@ -33,7 +33,7 @@ def log_writer(effect: Log):
 def add_timestamp(effect: Log):
     timestamped = f"[{datetime.now().isoformat()}] {effect.message}"
     return fx.send(Log(timestamped), interpret_final=False)
-    
+
 # Define an effectful computation
 def log_event(message: str):
     return fx.send(Log(message))
