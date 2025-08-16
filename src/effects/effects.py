@@ -37,34 +37,14 @@ class NoHandlerError(Exception):
         self.effect = effect
 
 
-_STACK_VAR: contextvars.ContextVar[list[tuple[Callable[[Any], Any], type[Any]]] | None] = (
-    contextvars.ContextVar("_STACK_VAR", default=None)
-)
-_PTR_VAR: contextvars.ContextVar[int | None] = contextvars.ContextVar(
-    "_STACK_PTR_VAR", default=None
-)
-
-
-def get_stack() -> list[tuple[Callable[[Any], Any], type[Any]]]:
-    """Get the current effect handler stack, creating one if it doesn't exist."""
-    current_list = _STACK_VAR.get()
-    if current_list is None:
-        list_to_set: list[tuple[Callable[[Any], Any], type[Any]]] = []
-    else:
-        # If a list exists (possibly from a copied context), copy it to ensure isolation.
-        list_to_set = list(current_list)
-    _STACK_VAR.set(list_to_set)
-    return list_to_set
-
-
-class _EffectHandlerContext[E, R]:
-    """Context manager for effect handlers."""
+class _EffectHandler[E, R]:
+    """Effect handler that acts as a context manager for stack management."""
 
     def __init__(
         self,
         handler_func: Callable[[E], R],
         effect_type: type[E],
-        stack_accessor: Callable[[], list[tuple[Callable[[Any], Any], type[Any]]]],
+        stack_accessor: Callable[[], list["_EffectHandler[Any, Any]"]],
         *,
         on_enter: Callable[[], None] | None = None,
         on_exit: Callable[[Any, Any, Any], None] | None = None,
@@ -78,10 +58,16 @@ class _EffectHandlerContext[E, R]:
     def __enter__(self):
         """Register the handler on the stack when entering the context."""
         stack = self._get_stack()
-        stack.append((self._handler_func, self._effect_type))
+        stack.append(self)
         if self._on_enter:
             self._on_enter()
         return self._handler_func
+
+    def __repr__(self) -> str:
+        """Return a string representation of the handler for debugging."""
+        func_name = getattr(self._handler_func, "__name__", repr(self._handler_func))
+        type_name = self._effect_type.__name__
+        return f"_EffectHandler({func_name}, {type_name})"
 
     def __exit__(
         self,
@@ -91,20 +77,57 @@ class _EffectHandlerContext[E, R]:
     ) -> None:
         """Remove the handler from the stack when exiting the context."""
         stack = self._get_stack()
-        expected = (self._handler_func, self._effect_type)
         if stack:
             for i in range(len(stack) - 1, -1, -1):
-                if stack[i] == expected:
+                if stack[i] is self:
                     stack.pop(i)
                     if self._on_exit:
                         self._on_exit(exc_type, exc_val, exc_tb)
                     return
-            warnings.warn(f"Handler {expected} not found on stack during exit.", RuntimeWarning)
+            warnings.warn(f"Handler {self} not found on stack during exit.", RuntimeWarning)
         else:
             warnings.warn(
-                f"Stack empty on exit, but handler {expected} was expected.",
+                f"Stack empty on exit, but handler {self} was expected.",
                 RuntimeWarning,
             )
+
+
+_STACK_VAR: contextvars.ContextVar[list["_EffectHandler[Any, Any]"] | None] = (
+    contextvars.ContextVar("_STACK_VAR", default=None)
+)
+_PTR_VAR: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "_STACK_PTR_VAR", default=None
+)
+
+
+def get_stack() -> list["_EffectHandler[Any, Any]"]:
+    """Get the current effect handler stack, creating one if it doesn't exist.
+
+    Returns a list of _EffectHandler instances currently on the stack.
+    The handlers are ordered from bottom (first added) to top (most recent).
+
+    This function is useful for:
+    - Inspecting the current handler configuration
+    - Manually manipulating handler order with bind()
+    - Debugging effect resolution
+
+    Example:
+        >>> @handler
+        >>> def my_handler(e: MyEffect) -> str:
+        ...     return "handled"
+        >>>
+        >>> with my_handler:
+        ...     stack = get_stack()
+        ...     print(stack)  # [_EffectHandler(my_handler, MyEffect)]
+    """
+    current_list = _STACK_VAR.get()
+    if current_list is None:
+        list_to_set: list[_EffectHandler[Any, Any]] = []
+    else:
+        # If a list exists (possibly from a copied context), copy it to ensure isolation.
+        list_to_set = list(current_list)
+    _STACK_VAR.set(list_to_set)
+    return list_to_set
 
 
 @overload
@@ -114,7 +137,7 @@ def handler(
     *,
     on_enter: Callable[[], None] | None = None,
     on_exit: Callable[[Any, Any, Any], None] | None = None,
-) -> _EffectHandlerContext[E, R]: ...
+) -> _EffectHandler[E, R]: ...
 
 
 @overload
@@ -123,7 +146,7 @@ def handler(
     *,
     on_enter: Callable[[], None] | None = None,
     on_exit: Callable[[Any, Any, Any], None] | None = None,
-) -> _EffectHandlerContext[E, R]: ...
+) -> _EffectHandler[E, R]: ...
 
 
 def handler(
@@ -132,7 +155,7 @@ def handler(
     *,
     on_enter: Callable[[], None] | None = None,
     on_exit: Callable[[Any, Any, Any], None] | None = None,
-) -> _EffectHandlerContext[E, R]:
+) -> _EffectHandler[E, R]:
     """Prepare an effect handler for a specific effect type, to be used in a `with` statement.
 
     Args:
@@ -186,9 +209,7 @@ def handler(
                 "Please provide effect_type explicitly."
             )
 
-    return _EffectHandlerContext(
-        handler_func, effect_type, get_stack, on_enter=on_enter, on_exit=on_exit
-    )
+    return _EffectHandler(handler_func, effect_type, get_stack, on_enter=on_enter, on_exit=on_exit)
 
 
 def send(effect: Effect[R], interpret_final: bool = True) -> R:
@@ -216,11 +237,11 @@ def send(effect: Effect[R], interpret_final: bool = True) -> R:
     ptr_token = _PTR_VAR.set(ptr)
     try:
         while ptr >= 0:
-            handler, eff_type = stack[ptr]
+            handler_obj = stack[ptr]
             ptr -= 1
             _PTR_VAR.set(ptr)
-            if isinstance(effect, eff_type):
-                return handler(effect)
+            if isinstance(effect, handler_obj._effect_type):
+                return handler_obj._handler_func(effect)
         raise NoHandlerError(effect)
     finally:
         _PTR_VAR.reset(ptr_token)
