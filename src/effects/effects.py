@@ -1,5 +1,6 @@
 import contextvars
 import inspect
+import types
 import warnings
 from collections.abc import Callable, Generator
 from functools import wraps
@@ -9,14 +10,17 @@ from typing import (
     ContextManager,
     ParamSpec,
     TypeVar,
+    Union,
+    get_args,
+    get_origin,
     overload,
 )
 
 from .util import stack
 
-R = TypeVar("R")  # Return type for effects
-E = TypeVar("E", bound="Effect[Any]")  # Effect type (must be subclass of Effect)
 D = TypeVar("D")  # Default value type for safe_send
+R = TypeVar("R")  # Return type for handler functions
+E = TypeVar("E", bound="Effect[Any]")  # Effect type (can be union of Effects)
 T = TypeVar("T")  # Generic type variable for function returns
 P = ParamSpec("P")  # Function parameters specification
 G = TypeVar("G")  # Generator yield type
@@ -38,19 +42,27 @@ class NoHandlerError(Exception):
 
 
 class _EffectHandler[E, R]:
-    """Effect handler that acts as a context manager for stack management."""
+    """Effect handler that acts as a context manager for stack management.
+
+    E can be a single Effect type or a union of Effect types.
+    """
 
     def __init__(
         self,
         handler_func: Callable[[E], R],
-        effect_type: type[E],
+        effect_type: type[Effect[Any]] | tuple[type[Effect[Any]], ...],
         stack_accessor: Callable[[], list["_EffectHandler[Any, Any]"]],
         *,
         on_enter: Callable[[], None] | None = None,
         on_exit: Callable[[Any, Any, Any], None] | None = None,
     ):
-        self._handler_func = handler_func
-        self._effect_type = effect_type
+        # Store the handler function with its original type
+        self.handler_func = handler_func
+        # Store as tuple for consistency (single type becomes 1-tuple)
+        if isinstance(effect_type, tuple):
+            self.effect_types = effect_type
+        else:
+            self.effect_types = (effect_type,)
         self._get_stack = stack_accessor
         self._on_enter = on_enter
         self._on_exit = on_exit
@@ -61,13 +73,16 @@ class _EffectHandler[E, R]:
         stack.append(self)
         if self._on_enter:
             self._on_enter()
-        return self._handler_func
+        return self.handler_func
 
     def __repr__(self) -> str:
         """Return a string representation of the handler for debugging."""
-        func_name = getattr(self._handler_func, "__name__", repr(self._handler_func))
-        type_name = self._effect_type.__name__
-        return f"_EffectHandler({func_name}, {type_name})"
+        func_name = getattr(self.handler_func, "__name__", repr(self.handler_func))
+        if len(self.effect_types) == 1:
+            type_names = self.effect_types[0].__name__
+        else:
+            type_names = " | ".join(t.__name__ for t in self.effect_types)
+        return f"_EffectHandler({func_name}, {type_names})"
 
     def __exit__(
         self,
@@ -133,7 +148,7 @@ def get_stack() -> list["_EffectHandler[Any, Any]"]:
 @overload
 def handler(
     handler_func: Callable[[E], R],
-    effect_type: type[E],
+    effect_type: type[E] | tuple[type[E], ...],
     *,
     on_enter: Callable[[], None] | None = None,
     on_exit: Callable[[Any, Any, Any], None] | None = None,
@@ -151,7 +166,7 @@ def handler(
 
 def handler(
     handler_func: Callable[[E], R],
-    effect_type: type[E] | None = None,
+    effect_type: type[E] | tuple[type[E], ...] | None = None,
     *,
     on_enter: Callable[[], None] | None = None,
     on_exit: Callable[[Any, Any, Any], None] | None = None,
@@ -173,7 +188,11 @@ def handler(
     Raises:
         TypeError: If effect_type is not provided and cannot be inferred from handler_func.
     """
-    if effect_type is None:
+    final_effect_type: type[Effect[Any]] | tuple[type[Effect[Any]], ...]
+
+    if effect_type is not None:
+        final_effect_type = effect_type
+    else:
         # Try to infer the effect type from the handler function's type annotations
         sig = inspect.signature(handler_func)
         params = list(sig.parameters.values())
@@ -193,23 +212,51 @@ def handler(
                 "Please provide effect_type explicitly or add a type annotation."
             )
 
-        # Handle both direct type and generic type annotations
-        # For example: Query or Effect[str] or subclasses
-        if hasattr(param_annotation, "__origin__"):
-            # It's a generic type, get the origin
-            effect_type = param_annotation.__origin__
+        # Check if it's a Union type (including the | operator)
+        origin = get_origin(param_annotation)
+        if origin is Union or origin is types.UnionType:
+            # It's a union type, extract all the types
+            union_args = get_args(param_annotation)
+
+            # Verify all types in the union are Effect subclasses
+            effect_types = []
+            for arg in union_args:
+                if hasattr(arg, "__origin__"):
+                    # Generic type, get the origin
+                    arg_type = arg.__origin__
+                else:
+                    arg_type = arg
+
+                if not (isinstance(arg_type, type) and issubclass(arg_type, Effect)):
+                    raise TypeError(
+                        f"Union type contains non-Effect type {arg_type}. "
+                        "All types in a union handler must be Effect subclasses."
+                    )
+                effect_types.append(arg_type)
+
+            final_effect_type = tuple(effect_types)
         else:
-            # It's a direct type
-            effect_type = param_annotation
+            # Handle both direct type and generic type annotations
+            # For example: Query or Effect[str] or subclasses
+            if hasattr(param_annotation, "__origin__"):
+                # It's a generic type, get the origin
+                inferred_type = param_annotation.__origin__
+            else:
+                # It's a direct type
+                inferred_type = param_annotation
 
-        # Verify it's actually an Effect subclass
-        if not (isinstance(effect_type, type) and issubclass(effect_type, Effect)):
-            raise TypeError(
-                f"Inferred type {effect_type} is not a subclass of Effect. "
-                "Please provide effect_type explicitly."
-            )
+            # Verify it's actually an Effect subclass
+            if not (isinstance(inferred_type, type) and issubclass(inferred_type, Effect)):
+                raise TypeError(
+                    f"Inferred type {inferred_type} is not a subclass of Effect. "
+                    "Please provide effect_type explicitly."
+                )
 
-    return _EffectHandler(handler_func, effect_type, get_stack, on_enter=on_enter, on_exit=on_exit)
+            final_effect_type = inferred_type
+
+    return _EffectHandler(
+        handler_func, final_effect_type, get_stack, on_enter=on_enter, on_exit=on_exit
+    )
 
 
 def send(effect: Effect[R], interpret_final: bool = True) -> R:
@@ -240,8 +287,9 @@ def send(effect: Effect[R], interpret_final: bool = True) -> R:
             handler_obj = stack[ptr]
             ptr -= 1
             _PTR_VAR.set(ptr)
-            if isinstance(effect, handler_obj._effect_type):
-                return handler_obj._handler_func(effect)
+            # Check if this handler can handle the effect
+            if any(isinstance(effect, t) for t in handler_obj.effect_types):
+                return handler_obj.handler_func(effect)  # type: ignore[arg-type]
         raise NoHandlerError(effect)
     finally:
         _PTR_VAR.reset(ptr_token)
@@ -297,7 +345,7 @@ def safe_send(
         return default_value
 
 
-def barrier(effect_type: type[E]):
+def barrier(*effect_type: type[E]):
     """Create a handler that raises NoHandlerError for the specified effect type.
 
     This is useful for ensuring that certain effects are not handled in specific contexts.
@@ -312,7 +360,7 @@ def barrier(effect_type: type[E]):
     def _raise(effect: E) -> None:
         raise NoHandlerError(effect)
 
-    return handler(_raise, effect_type)
+    return handler(_raise, *effect_type)
 
 
 @overload
