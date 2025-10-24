@@ -1,21 +1,21 @@
 import contextvars
+import dataclasses as dc
 import inspect
 import types
 import warnings
 from collections.abc import Callable, Generator
 from functools import wraps
 from types import TracebackType
-from typing import (
-    Any,
-    ContextManager,
-    ParamSpec,
-    TypeVar,
-    Union,
-    get_args,
-    get_origin,
-    overload,
-)
+from typing import Any, ContextManager, ParamSpec, TypeVar, get_args, get_origin, overload
 
+from ._typing import (
+    annotation_matches_effect,
+    describe_effect as _describe_effect,
+    effect_class_from_annotation,
+    format_annotation,
+    infer_effect_type_args,
+    normalize_effect_annotations,
+)
 from .util import stack
 
 D = TypeVar("D")  # Default value type for safe_send
@@ -26,8 +26,27 @@ P = ParamSpec("P")  # Function parameters specification
 G = TypeVar("G")  # Generator yield type
 
 
+@dc.dataclass
 class Effect[R]:
-    """Base class for all effects."""
+    """Base class for all effects"""
+
+    __effect_type_args__: tuple[type[Any], ...] | None = dc.field(
+        default=None, init=False, repr=False, hash=False, compare=False
+    )
+
+    def __post_init__(self) -> None:
+        """Infers and caches the concrete type arguments of the effect instance.
+        This is a performance optimization to speed up effect dispatch.
+
+        If a subclass defines its own __post_init__, it must call
+        super().__post_init__() to ensure this optimization is applied.
+        """
+        params_raw = getattr(self.__class__, "__parameters__", ())
+        params = tuple(params_raw) or tuple(getattr(self.__class__, "__type_params__", ()))
+        inferred_args = None
+        if params:  # Generic effect
+            inferred_args = infer_effect_type_args(self, self.__class__, len(params))
+        self.__effect_type_args__ = inferred_args
 
 
 class NoHandlerError(Exception):
@@ -36,9 +55,8 @@ class NoHandlerError(Exception):
     __match_args__ = ("effect",)
 
     def __init__(self, effect: Effect[Any]):
-        """Initialize the exception with the unhandled effect."""
-        super().__init__(f"No handler for effect: {effect}")
         self.effect = effect
+        super().__init__(f"No handler for effect {_describe_effect(effect, effect_base=Effect)}")
 
 
 class _EffectHandler[E, R]:
@@ -50,7 +68,7 @@ class _EffectHandler[E, R]:
     def __init__(
         self,
         handler_func: Callable[[E], R],
-        effect_type: type[Effect[Any]] | tuple[type[Effect[Any]], ...],
+        effect_type: Any | tuple[Any, ...],
         stack_accessor: Callable[[], list["_EffectHandler[Any, Any]"]],
         *,
         on_enter: Callable[[], None] | None = None,
@@ -58,11 +76,11 @@ class _EffectHandler[E, R]:
     ):
         # Store the handler function with its original type
         self.handler_func = handler_func
-        # Store as tuple for consistency (single type becomes 1-tuple)
-        if isinstance(effect_type, tuple):
-            self.effect_types = effect_type
-        else:
-            self.effect_types = (effect_type,)
+        self._annotations = normalize_effect_annotations(effect_type, effect_base=Effect)
+        # Store bare effect classes for compatibility with existing expectations
+        self.effect_types = tuple(
+            effect_class_from_annotation(ann, effect_base=Effect) for ann in self._annotations
+        )
         self._get_stack = stack_accessor
         self._on_enter = on_enter
         self._on_exit = on_exit
@@ -78,10 +96,12 @@ class _EffectHandler[E, R]:
     def __repr__(self) -> str:
         """Return a string representation of the handler for debugging."""
         func_name = getattr(self.handler_func, "__name__", repr(self.handler_func))
-        if len(self.effect_types) == 1:
-            type_names = self.effect_types[0].__name__
+        if len(self._annotations) == 1:
+            type_names = format_annotation(self._annotations[0], effect_base=Effect)
         else:
-            type_names = " | ".join(t.__name__ for t in self.effect_types)
+            type_names = " | ".join(
+                format_annotation(ann, effect_base=Effect) for ann in self._annotations
+            )
         return f"_EffectHandler({func_name}, {type_names})"
 
     def __exit__(
@@ -105,6 +125,17 @@ class _EffectHandler[E, R]:
                 f"Stack empty on exit, but handler {self} was expected.",
                 RuntimeWarning,
             )
+
+    def matches(self, effect: Effect[Any]) -> bool:
+        """Return True if this handler can process the given effect."""
+        return any(
+            annotation_matches_effect(effect, ann, effect_base=Effect) for ann in self._annotations
+        )
+
+
+def describe_effect(effect: Effect[Any]) -> str:
+    """Return a human-readable description of an effect instance and its type arguments."""
+    return _describe_effect(effect, effect_base=Effect)
 
 
 _STACK_VAR: contextvars.ContextVar[list["_EffectHandler[Any, Any]"] | None] = (
@@ -188,7 +219,7 @@ def handler(
     Raises:
         TypeError: If effect_type is not provided and cannot be inferred from handler_func.
     """
-    final_effect_type: type[Effect[Any]] | tuple[type[Effect[Any]], ...]
+    final_effect_type: type[E] | tuple[type[E], ...]
 
     if effect_type is not None:
         final_effect_type = effect_type
@@ -214,45 +245,35 @@ def handler(
 
         # Check if it's a Union type (including the | operator)
         origin = get_origin(param_annotation)
-        if origin is Union or origin is types.UnionType:
+        if origin is types.UnionType:
             # It's a union type, extract all the types
             union_args = get_args(param_annotation)
 
             # Verify all types in the union are Effect subclasses
             effect_types = []
             for arg in union_args:
-                if hasattr(arg, "__origin__"):
-                    # Generic type, get the origin
-                    arg_type = arg.__origin__
-                else:
-                    arg_type = arg
-
-                if not (isinstance(arg_type, type) and issubclass(arg_type, Effect)):
+                base_type = get_origin(arg) or arg
+                if not (isinstance(base_type, type) and issubclass(base_type, Effect)):
                     raise TypeError(
-                        f"Union type contains non-Effect type {arg_type}. "
+                        f"Union type contains non-Effect type {base_type}. "
                         "All types in a union handler must be Effect subclasses."
                     )
-                effect_types.append(arg_type)
+                effect_types.append(arg)
 
             final_effect_type = tuple(effect_types)
         else:
             # Handle both direct type and generic type annotations
             # For example: Query or Effect[str] or subclasses
-            if hasattr(param_annotation, "__origin__"):
-                # It's a generic type, get the origin
-                inferred_type = param_annotation.__origin__
-            else:
-                # It's a direct type
-                inferred_type = param_annotation
+            base_type = get_origin(param_annotation) or param_annotation
 
             # Verify it's actually an Effect subclass
-            if not (isinstance(inferred_type, type) and issubclass(inferred_type, Effect)):
+            if not (isinstance(base_type, type) and issubclass(base_type, Effect)):
                 raise TypeError(
-                    f"Inferred type {inferred_type} is not a subclass of Effect. "
+                    f"Inferred type {base_type} is not a subclass of Effect. "
                     "Please provide effect_type explicitly."
                 )
 
-            final_effect_type = inferred_type
+            final_effect_type = param_annotation
 
     return _EffectHandler(
         handler_func, final_effect_type, get_stack, on_enter=on_enter, on_exit=on_exit
@@ -288,7 +309,7 @@ def send(effect: Effect[R], interpret_final: bool = True) -> R:
             ptr -= 1
             _PTR_VAR.set(ptr)
             # Check if this handler can handle the effect
-            if any(isinstance(effect, t) for t in handler_obj.effect_types):
+            if handler_obj.matches(effect):
                 return handler_obj.handler_func(effect)  # type: ignore[arg-type]
         raise NoHandlerError(effect)
     finally:
