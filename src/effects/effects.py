@@ -1,5 +1,4 @@
 import contextvars
-import dataclasses as dc
 import inspect
 import types
 import warnings
@@ -13,7 +12,6 @@ from ._typing import (
     describe_effect as _describe_effect,
     effect_class_from_annotation,
     format_annotation,
-    infer_effect_type_args,
     normalize_effect_annotations,
 )
 from .util import stack
@@ -26,27 +24,10 @@ P = ParamSpec("P")  # Function parameters specification
 G = TypeVar("G")  # Generator yield type
 
 
-@dc.dataclass
 class Effect[R]:
     """Base class for all effects"""
 
-    __effect_type_args__: tuple[type[Any], ...] | None = dc.field(
-        default=None, init=False, repr=False, hash=False, compare=False
-    )
-
-    def __post_init__(self) -> None:
-        """Infers and caches the concrete type arguments of the effect instance.
-        This is a performance optimization to speed up effect dispatch.
-
-        If a subclass defines its own __post_init__, it must call
-        super().__post_init__() to ensure this optimization is applied.
-        """
-        params_raw = getattr(self.__class__, "__parameters__", ())
-        params = tuple(params_raw) or tuple(getattr(self.__class__, "__type_params__", ()))
-        inferred_args = None
-        if params:  # Generic effect
-            inferred_args = infer_effect_type_args(self, self.__class__, len(params))
-        self.__effect_type_args__ = inferred_args
+    __effect_type_args__: tuple[type | None, ...] | None = None
 
 
 class NoHandlerError(Exception):
