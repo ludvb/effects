@@ -1,5 +1,5 @@
 import types
-from typing import TYPE_CHECKING, Any, Iterable, TypeVar, cast, get_args, get_origin
+from typing import TYPE_CHECKING, Any, Iterable, TypeVar, Union, cast, get_args, get_origin
 
 if TYPE_CHECKING:  # pragma: no cover - type check only
     from .effects import Effect
@@ -7,6 +7,7 @@ if TYPE_CHECKING:  # pragma: no cover - type check only
 
 _TYPEVAR_TYPE = type(TypeVar("T"))
 _UNION_ORIGIN = types.UnionType
+_TYPING_UNION = Union
 
 
 def normalize_effect_annotations(
@@ -20,7 +21,7 @@ def normalize_effect_annotations(
     normalized: list[Any] = []
     for candidate in raw:
         origin = get_origin(candidate)
-        if origin is _UNION_ORIGIN:
+        if origin is _UNION_ORIGIN or origin is _TYPING_UNION:
             normalized.extend(
                 normalize_effect_annotations(get_args(candidate), effect_base=effect_base)
             )
@@ -158,7 +159,7 @@ def _collect_typevar_bindings(annotation: Any, value: Any, bindings: dict[Any, t
         return
 
     origin = get_origin(annotation)
-    if origin is _UNION_ORIGIN:
+    if origin is _UNION_ORIGIN or origin is _TYPING_UNION:
         for option in get_args(annotation):
             _collect_typevar_bindings(option, value, bindings)
         return
@@ -262,7 +263,7 @@ def _annotation_contains_typevar(annotation: Any) -> bool:
     if isinstance(annotation, _TYPEVAR_TYPE):
         return True
     origin = get_origin(annotation)
-    if origin is _UNION_ORIGIN:
+    if origin is _UNION_ORIGIN or origin is _TYPING_UNION:
         return any(_annotation_contains_typevar(arg) for arg in get_args(annotation))
     if origin is None:
         return False
@@ -276,7 +277,7 @@ def _type_arg_matches(expected: Any, actual: type[Any]) -> bool:
         return False
 
     origin = get_origin(expected)
-    if origin is _UNION_ORIGIN:
+    if origin is _UNION_ORIGIN or origin is _TYPING_UNION:
         return any(_type_arg_matches(opt, actual) for opt in get_args(expected))
 
     if isinstance(expected, _TYPEVAR_TYPE):

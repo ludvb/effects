@@ -161,6 +161,45 @@ def test_decorator_syntax():
         send(Command("action"))  # Should not raise
 
 
+def test_union_type_with_typevar():
+    """Test that union types with TypeVars are correctly handled."""
+    import dataclasses as dc
+    from typing import Any
+
+    @dc.dataclass
+    class UnionEffect[T](Effect[int]):
+        val: T | float
+
+    @handler
+    def handle_int_union(e: UnionEffect[int]) -> int:
+        return int(e.val * 2)
+
+    @handler
+    def handle_str_union(e: UnionEffect[str]) -> int:
+        # e.val is str | float, but we know it's str in this case
+        if isinstance(e.val, str):
+            return len(e.val)
+        return 0  # Won't happen in practice
+
+    @handler
+    def handle_any_union(e: UnionEffect[Any]) -> int:
+        return 999
+
+    # Test with handler stack
+    with handle_any_union, handle_str_union, handle_int_union:
+        # int value should match handle_int_union
+        result1 = send(UnionEffect(42))
+        assert result1 == 84  # 42 * 2
+
+        # str value should match handle_str_union
+        result2 = send(UnionEffect("hello"))
+        assert result2 == 5  # len("hello")
+
+        # float value should match handle_any_union (no specific float handler)
+        result3 = send(UnionEffect(3.14))
+        assert result3 == 999
+
+
 def test_callable_type_inference():
     """Test that Callable type parameters are correctly inferred from function annotations."""
     import dataclasses as dc
