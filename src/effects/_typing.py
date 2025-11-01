@@ -168,7 +168,42 @@ def _collect_typevar_bindings(annotation: Any, value: Any, bindings: dict[Any, t
 
     args = get_args(annotation)
 
+    # Import Callable here to avoid circular dependency
+    from collections.abc import Callable as CallableABC
+
     match origin:
+        case _ if origin is CallableABC:
+            # Handle Callable types - extract parameter types from function annotations
+            if not callable(value):
+                return
+            if not args or len(args) != 2:
+                return
+            param_types, return_type = args
+
+            # Try to get function annotations
+            if hasattr(value, "__annotations__"):
+                annotations = value.__annotations__
+                # Get parameter types from the function's annotations
+                param_names = [k for k in annotations.keys() if k != "return"]
+
+                if isinstance(param_types, (list, tuple)) and param_names:
+                    # Match TypeVars in parameter types with actual function parameter types
+                    for i, (param_annotation, param_name) in enumerate(
+                        zip(param_types, param_names, strict=False)
+                    ):
+                        if param_name in annotations:
+                            actual_type = annotations[param_name]
+                            if isinstance(param_annotation, _TYPEVAR_TYPE):
+                                bindings.setdefault(param_annotation, actual_type)
+                            else:
+                                _collect_typevar_bindings(param_annotation, actual_type, bindings)
+
+            # Handle return type if it contains TypeVars
+            if isinstance(return_type, _TYPEVAR_TYPE) and hasattr(value, "__annotations__"):
+                if "return" in value.__annotations__:
+                    bindings.setdefault(return_type, value.__annotations__["return"])
+            return
+
         case _ if origin is tuple:
             if not isinstance(value, tuple):
                 return

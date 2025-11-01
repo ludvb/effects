@@ -159,3 +159,48 @@ def test_decorator_syntax():
     with handle_query, handle_command:
         assert send(Query("test")) == "decorated_test"
         send(Command("action"))  # Should not raise
+
+
+def test_callable_type_inference():
+    """Test that Callable type parameters are correctly inferred from function annotations."""
+    import dataclasses as dc
+    from typing import Any, Callable
+
+    @dc.dataclass
+    class CallableEffect[T](Effect[int]):
+        fn: Callable[[T], int]
+
+    @handler
+    def handle_int_callable(e: CallableEffect[int]) -> int:
+        return e.fn(42)
+
+    @handler
+    def handle_str_callable(e: CallableEffect[str]) -> int:
+        return e.fn("hello")
+
+    @handler
+    def handle_any_callable(e: CallableEffect[Any]) -> int:
+        return 999
+
+    def int_func(x: int) -> int:
+        return x * 2
+
+    def str_func(x: str) -> int:
+        return len(x)
+
+    def float_func(x: float) -> int:
+        return int(x * 10)
+
+    # Test with handler stack
+    with handle_any_callable, handle_str_callable, handle_int_callable:
+        # Should match handle_int_callable
+        result1 = send(CallableEffect(fn=int_func))
+        assert result1 == 84  # int_func(42) = 42 * 2 = 84
+
+        # Should match handle_str_callable
+        result2 = send(CallableEffect(fn=str_func))
+        assert result2 == 5  # str_func("hello") = len("hello") = 5
+
+        # Should match handle_any_callable (no specific float handler)
+        result3 = send(CallableEffect(fn=float_func))
+        assert result3 == 999  # Handled by Any handler
