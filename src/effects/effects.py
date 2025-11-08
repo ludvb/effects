@@ -399,7 +399,8 @@ def bind(
     """
     base_stack = get_stack() if bind_current_context else None
     old_stack = _STACK_VAR.set(base_stack)
-    old_stack_ptr = _PTR_VAR.set(None)
+    base_ptr = _PTR_VAR.get() if bind_current_context else None
+    old_stack_ptr = _PTR_VAR.set(base_ptr)
 
     try:
         with stack(*effect_handlers):
