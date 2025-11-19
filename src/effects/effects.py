@@ -66,14 +66,6 @@ class _EffectHandler[E, R]:
         self._on_enter = on_enter
         self._on_exit = on_exit
 
-    def __enter__(self):
-        """Register the handler on the stack when entering the context."""
-        stack = self._get_stack()
-        stack.append(self)
-        if self._on_enter:
-            self._on_enter()
-        return self.handler_func
-
     def __repr__(self) -> str:
         """Return a string representation of the handler for debugging."""
         func_name = getattr(self.handler_func, "__name__", repr(self.handler_func))
@@ -85,6 +77,16 @@ class _EffectHandler[E, R]:
             )
         return f"_EffectHandler({func_name}, {type_names})"
 
+    def __enter__(self):
+        """Register the handler on the stack when entering the context."""
+        stack = self._get_stack()
+        cur_ptr = _PTR_VAR.get() or len(stack) - 1
+        stack.insert(cur_ptr + 1, self)
+        _PTR_VAR.set(cur_ptr + 1)
+        if self._on_enter:
+            self._on_enter()
+        return self.handler_func
+
     def __exit__(
         self,
         exc_type: type[BaseException] | None,
@@ -93,19 +95,15 @@ class _EffectHandler[E, R]:
     ) -> None:
         """Remove the handler from the stack when exiting the context."""
         stack = self._get_stack()
-        if stack:
-            for i in range(len(stack) - 1, -1, -1):
-                if stack[i] is self:
-                    stack.pop(i)
-                    if self._on_exit:
-                        self._on_exit(exc_type, exc_val, exc_tb)
-                    return
-            warnings.warn(f"Handler {self} not found on stack during exit.", RuntimeWarning)
-        else:
-            warnings.warn(
-                f"Stack empty on exit, but handler {self} was expected.",
-                RuntimeWarning,
-            )
+        ptr = _PTR_VAR.get()
+        assert ptr is not None
+        if stack[ptr] is not self:
+            warnings.warn(f"Handler stack is corrupted: expected {self}, found {stack[ptr]}")
+            return
+        stack.pop(ptr)
+        _PTR_VAR.set(ptr - 1)
+        if self._on_exit:
+            self._on_exit(exc_type, exc_val, exc_tb)
 
     def matches(self, effect: Effect[Any]) -> bool:
         """Return True if this handler can process the given effect."""
